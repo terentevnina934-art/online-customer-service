@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>客服后台</title>
+<style>
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#081624;color:#fff}
+button,input{font:inherit}
+.login{height:100%;display:flex;align-items:center;justify-content:center}
+.card{width:360px;background:#14263a;padding:28px;border-radius:16px}
+.card h2{margin-top:0}
+.card input{width:100%;padding:12px;border-radius:8px;border:1px solid #34506a;background:#0c1d2d;color:#fff;margin:10px 0}
+.card button,.send{width:100%;padding:12px;border:0;border-radius:8px;background:#249cf0;color:#fff;font-weight:700;cursor:pointer}
+.app{height:100%;display:none}
+.sidebar{width:280px;background:#0d1e2e;border-right:1px solid #21384d;overflow:auto}
+.title{padding:16px;font-weight:700;border-bottom:1px solid #21384d}
+.session{padding:14px;border-bottom:1px solid #193044;cursor:pointer}
+.session:hover,.session.active{background:#17334b}
+.session small{display:block;color:#8fa5b8;margin-top:4px}
+.main{flex:1;display:flex;flex-direction:column}
+.head{height:58px;background:#14263a;padding:0 18px;display:flex;align-items:center;justify-content:space-between}
+.messages{flex:1;overflow:auto;padding:20px;display:flex;flex-direction:column;gap:10px}
+.customer,.agent{max-width:70%;padding:10px 13px;border-radius:14px;line-height:1.4}
+.customer{align-self:flex-start;background:#20364b}
+.agent{align-self:flex-end;background:#249cf0}
+.meta{font-size:11px;opacity:.65;margin-top:4px}
+.composer{display:flex;gap:10px;padding:12px;background:#14263a}
+.composer input{flex:1;padding:12px;border-radius:20px;border:1px solid #34506a;background:#0c1d2d;color:#fff}
+.composer button{width:auto;padding:0 22px}
+.empty{margin:auto;color:#8fa5b8}
+.logout{background:none;border:1px solid #456078;color:#fff;border-radius:7px;padding:7px 12px;cursor:pointer}
+</style>
+</head>
+<body>
+
+<div id="login" class="login">
+  <div class="card">
+    <h2>客服后台</h2>
+    <div>请输入管理员密码</div>
+    <input id="adminKey" type="password" placeholder="管理员密码">
+    <button id="loginBtn">登录</button>
+    <div id="loginMsg" style="color:#ff9b9b;margin-top:10px"></div>
+  </div>
+</div>
+
+<div id="app" class="app">
+  <div class="sidebar">
+    <div class="title">客户列表</div>
+    <div id="sessions"></div>
+  </div>
+
+  <div class="main">
+    <div class="head">
+      <div id="currentName">请选择客户</div>
+      <button class="logout" id="logoutBtn">退出</button>
+    </div>
+
+    <div id="messages" class="messages">
+      <div class="empty">请选择左侧客户开始聊天</div>
+    </div>
+
+    <form id="form" class="composer">
+      <input id="input" placeholder="输入回复内容…" autocomplete="off">
+      <button class="send" type="submit">发送</button>
+    </form>
+  </div>
+</div>
+
+<script>
+const API='https://aezhslbudmptkhtdsanh.supabase.co/functions/v1/customer-service-api';
+
+let KEY='';
+let currentSession=null;
+let lastId=0;
+const seen=new Set();
+
+const login=document.getElementById('login');
+const app=document.getElementById('app');
+const sessionsBox=document.getElementById('sessions');
+const messagesBox=document.getElementById('messages');
+const currentName=document.getElementById('currentName');
+const input=document.getElementById('input');
+
+async function call(body){
+  const r=await fetch(API,{
+    method:'POST',
+    headers:{
+      'content-type':'application/json',
+      'x-admin-key':KEY
+    },
+    body:JSON.stringify(body)
+  });
+
+  if(!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+function customerName(s){
+  const token=s.customer_token||s.token||'customer';
+  return '客户 ' + token.slice(-6);
+}
+
+async function loginAdmin(){
+  KEY=document.getElementById('adminKey').value.trim();
+  if(!KEY)return;
+
+  try{
+    await call({action:'admin_sessions'});
+    sessionStorage.setItem('cs_admin_key',KEY);
+    login.style.display='none';
+    app.style.display='flex';
+    loadSessions();
+  }catch(e){
+    document.getElementById('loginMsg').textContent='密码错误或连接失败';
+  }
+}
+
+async function loadSessions(){
+  if(!KEY)return;
+
+  try{
+    const d=await call({action:'admin_sessions'});
+    const list=d.sessions||[];
+
+    sessionsBox.innerHTML='';
+
+    list.forEach(s=>{
+      const div=document.createElement('div');
+      div.className='session'+(currentSession===s.id?' active':'');
+      div.innerHTML=
+        '<div>'+customerName(s)+'</div>'+
+        '<small>'+(s.last_message_at?new Date(s.last_message_at).toLocaleString():'')+'</small>';
+
+      div.onclick=()=>{
+        currentSession=s.id;
+        lastId=0;
+        seen.clear();
+        currentName.textContent=customerName(s);
+        messagesBox.innerHTML='';
+        loadSessions();
+        loadMessages();
+      };
+
+      sessionsBox.appendChild(div);
+    });
+  }catch(e){}
+}
+
+function render(m){
+  if(!m || seen.has(m.id))return;
+
+  seen.add(m.id);
+  lastId=Math.max(lastId,Number(m.id)||0);
+
+  const div=document.createElement('div');
+  div.className=m.sender==='agent'?'agent':'customer';
+
+  const text=document.createElement('div');
+  text.textContent=m.body;
+
+  const meta=document.createElement('div');
+  meta.className='meta';
+  meta.textContent=new Date(m.created_at).toLocaleTimeString();
+
+  div.append(text,meta);
+  messagesBox.appendChild(div);
+  messagesBox.scrollTop=messagesBox.scrollHeight;
+}
+
+async function loadMessages(){
+  if(!currentSession)return;
+
+  try{
+    const d=await call({
+      action:'admin_messages',
+      session_id:currentSession,
+      after:lastId
+    });
+
+    (d.messages||[]).forEach(render);
+  }catch(e){}
+}
+
+document.getElementById('loginBtn').onclick=loginAdmin;
+
+document.getElementById('adminKey').addEventListener('keydown',e=>{
+  if(e.key==='Enter')loginAdmin();
+});
+
+document.getElementById('logoutBtn').onclick=()=>{
+  sessionStorage.removeItem('cs_admin_key');
+  location.reload();
+};
+
+document.getElementById('form').addEventListener('submit',async e=>{
+  e.preventDefault();
+
+  if(!currentSession)return;
+
+  const text=input.value.trim();
+  if(!text)return;
+
+  input.value='';
+
+  try{
+    const d=await call({
+      action:'admin_send',
+      session_id:currentSession,
+      text
+    });
+
+    render(d.message);
+    loadSessions();
+  }catch(e){
+    input.value=text;
+    alert('发送失败');
+  }
+});
+
+KEY=sessionStorage.getItem('cs_admin_key')||'';
+
+if(KEY){
+  call({action:'admin_sessions'}).then(()=>{
+    login.style.display='none';
+    app.style.display='flex';
+    loadSessions();
+  }).catch(()=>{
+    sessionStorage.removeItem('cs_admin_key');
+    KEY='';
+  });
+}
+
+setInterval(loadSessions,2500);
+setInterval(loadMessages,1200);
+</script>
+
+</body>
+</html>
